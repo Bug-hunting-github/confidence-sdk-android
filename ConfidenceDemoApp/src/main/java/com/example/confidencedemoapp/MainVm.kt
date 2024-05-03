@@ -54,6 +54,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         mutableMap["screen"] = ConfidenceValue.String("value")
         mutableMap["hello"] = ConfidenceValue.Boolean(false)
         mutableMap["NN"] = ConfidenceValue.Double(20.0)
+        mutableMap["list"] = ConfidenceValue.stringList(listOf(""))
         mutableMap["my_struct"] = ConfidenceValue.Struct(mapOf("x" to ConfidenceValue.Double(2.0)))
 
         val confidence = ConfidenceFactory.create(
@@ -92,7 +93,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         _message.postValue(messageValue)
         _color.postValue(colorFlag)
 
-        eventSender.send("navigate", mapOf("my_date" to ConfidenceValue.Date(Date()), "my_time" to ConfidenceValue.Timestamp(Date())))
+        eventSender.track("navigate", mapOf("my_date" to ConfidenceValue.Date(Date()), "my_time" to ConfidenceValue.Timestamp(Date())))
     }
 
     fun updateContext() {

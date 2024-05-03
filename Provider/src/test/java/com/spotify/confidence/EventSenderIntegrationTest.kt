@@ -1,6 +1,7 @@
 package com.spotify.confidence
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.spotify.confidence.client.SdkMetadata
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
@@ -10,6 +11,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert
 import org.junit.Before
 import org.junit.Test
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doNothing
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 import java.io.File
@@ -17,6 +20,8 @@ import java.nio.file.Files
 
 private const val clientSecret = "WciJVLIEiNnRxV8gaYPZNCFF8vbAXOu6"
 private val mockContext: Context = mock()
+private val mockSharedPrefs: SharedPreferences = mock()
+private val mockSharedPrefsEdit: SharedPreferences.Editor = mock()
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class EventSenderIntegrationTest {
@@ -27,10 +32,27 @@ class EventSenderIntegrationTest {
     @Before
     fun setup() {
         whenever(mockContext.getDir("events", Context.MODE_PRIVATE)).thenReturn(directory)
+        whenever(mockContext.getSharedPreferences(SHARED_PREFS_NAME, Context.MODE_PRIVATE)).thenReturn(mockSharedPrefs)
+        whenever(mockSharedPrefs.edit()).thenReturn(mockSharedPrefsEdit)
+        whenever(mockSharedPrefsEdit.putString(any(), any())).thenReturn(mockSharedPrefsEdit)
+        doNothing().whenever(mockSharedPrefsEdit).apply()
         eventSender = null
         for (file in directory.walkFiles()) {
             file.delete()
         }
+    }
+
+    @Test
+    fun created_event_sender_has_visitor_id_context() = runTest {
+        val testDispatcher = UnconfinedTestDispatcher(testScheduler)
+        eventSender = ConfidenceFactory.create(
+            mockContext,
+            clientSecret,
+            dispatcher = testDispatcher
+        )
+        val context = eventSender?.getContext()
+        Assert.assertNotNull(context)
+        Assert.assertTrue(context!!.containsKey(VISITOR_ID_CONTEXT_KEY))
     }
 
     @Test
@@ -46,7 +68,7 @@ class EventSenderIntegrationTest {
         val eventCount = 4
         requireNotNull(eventSender)
         repeat(eventCount) {
-            eventSender.send("navigate")
+            eventSender.track("navigate")
         }
         val list = mutableListOf<File>()
         for (file in directory.walkFiles()) {
@@ -104,7 +126,7 @@ class EventSenderIntegrationTest {
         val eventCount = 4 * batchSize + 2
         requireNotNull(eventSender)
         repeat(eventCount) {
-            eventSender.send("navigate")
+            eventSender.track("navigate")
         }
         advanceUntilIdle()
         runBlocking {
@@ -122,6 +144,63 @@ class EventSenderIntegrationTest {
                 .first()
             Assert.assertEquals(eventStorage.eventsFor(currentFile).size, 2)
         }
+    }
+
+    @Test
+    fun handles_message_key_collision() = runTest {
+        val eventStorage = EventStorageImpl(mockContext)
+        val testDispatcher = UnconfinedTestDispatcher(testScheduler)
+        val batchSize = 1
+        val uploadedEvents: MutableList<Event> = mutableListOf()
+        val flushPolicy = object : FlushPolicy {
+            private var size = 0
+            override fun reset() {
+                size = 0
+            }
+
+            override fun hit(event: Event) {
+                size++
+            }
+
+            override fun shouldFlush(): Boolean {
+                return size >= batchSize
+            }
+        }
+        val uploader = object : EventSenderUploader {
+            override suspend fun upload(events: EventBatchRequest): Boolean {
+                uploadedEvents.addAll(events.events)
+                return false
+            }
+        }
+        val engine = EventSenderEngineImpl(
+            eventStorage,
+            clientSecret,
+            flushPolicies = listOf(flushPolicy),
+            dispatcher = testDispatcher,
+            sdkMetadata = SdkMetadata("kotlin_test", ""),
+            uploader = uploader
+        )
+        engine.emit(
+            eventName = "my_event",
+            message = mapOf(
+                "a" to ConfidenceValue.Integer(0),
+                "message" to ConfidenceValue.Integer(1)
+            ),
+            context = mapOf(
+                "a" to ConfidenceValue.Integer(2),
+                "message" to ConfidenceValue.Integer(3)
+            )
+        )
+        advanceUntilIdle()
+        Assert.assertEquals("eventDefinitions/my_event", uploadedEvents[0].eventDefinition)
+        Assert.assertEquals(
+            mapOf(
+                "a" to ConfidenceValue.Integer(0),
+                "message" to ConfidenceValue.Integer(1)
+            ),
+            uploadedEvents[0].payload
+        )
+        print(uploadedEvents)
     }
 
     @Test
@@ -170,7 +249,7 @@ class EventSenderIntegrationTest {
         val eventCount = 4 * batchSize + 2
         requireNotNull(eventSender)
         repeat(eventCount) {
-            eventSender.send("navigate")
+            eventSender.track("navigate")
         }
         advanceUntilIdle()
         Assert.assertEquals(uploadRequestCount, eventCount / batchSize)
